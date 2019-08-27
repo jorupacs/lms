@@ -39,3 +39,10 @@ Body:
   "phone": "09999999999"
  }
 ```
+Response:
+```json
+{
+    "message": "Sucessfully submitted lead with phone 09999999999",
+    "candidateId": "d706ed10-c7ee-11e9-ba8f-295eb71104cd"
+}
+```
