@@ -1,0 +1,134 @@
+service: lead-service
+
+provider:
+  name: aws
+  runtime: nodejs8.10
+  stage: dev
+  profile: serverless-admin
+  region: ap-southeast-1
+
+  environment:
+    LEAD_TABLE: ${self:service}-${opt:stage, self:provider.stage}
+    # Fill with proper path
+    CRM_API_ADD: https://qwertyuiop.execute-api.ap-southeast-1.amazonaws.com/dev/crm/add
+    CRM_API_ENRICH: https://qwertyuiop.execute-api.ap-southeast-1.amazonaws.com/dev/crm/enrich
+    CRM_API_DIALLER: https://qwertyuiop.execute-api.ap-southeast-1.amazonaws.com/dev/crm/dialler
+    # Fill with proper path
+    CRM_QUEUE: ${self:service}_${opt:stage, self:provider.stage}_crm
+    ENRICH_QUEUE: ${self:service}_${opt:stage, self:provider.stage}_enrich
+    DIALLER_QUEUE: ${self:service}_${opt:stage, self:provider.stage}_dialler
+    SNS_TOPIC: ${self:service}-${opt:stage, self:provider.stage}-leads
+    # Fill with proper account ID
+    ACCOUNT_ID: XXXXXXXXXXXX
+    REGION: ${self:provider.region}
+    PROCESS_ATTEMPT_LIMIT: 2
+
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:Query
+        - dynamodb:Scan
+        - dynamodb:GetItem
+        - dynamodb:PutItem
+        - dynamodb:ListStreams
+      Resource: "arn:aws:dynamodb:${self:provider.region}:${self:provider.environment.ACCOUNT_ID}:table/${self:provider.environment.LEAD_TABLE}"
+    - Effect: Allow
+      Action:
+        - sqs:SendMessage
+        - sqs:ReceiveMessage
+      Resource: "arn:aws:sqs:${self:provider.region}:${self:provider.environment.ACCOUNT_ID}:${self:provider.environment.CRM_QUEUE}"
+    - Effect: Allow
+      Action:
+        - sqs:SendMessage
+        - sqs:ReceiveMessage
+      Resource: "arn:aws:sqs:${self:provider.region}:${self:provider.environment.ACCOUNT_ID}:${self:provider.environment.ENRICH_QUEUE}"
+    - Effect: Allow
+      Action:
+        - sqs:SendMessage
+        - sqs:ReceiveMessage
+      Resource: "arn:aws:sqs:${self:provider.region}:${self:provider.environment.ACCOUNT_ID}:${self:provider.environment.DIALLER_QUEUE}"
+    - Effect: Allow
+      Action:
+        - sns:Publish
+        - sns:Subscribe
+      Resource: "arn:aws:sns:${self:provider.region}:${self:provider.environment.ACCOUNT_ID}:${self:provider.environment.SNS_TOPIC}"
+
+functions:
+  leadSubmit:
+    handler: api/leadSubmit.handler
+    memorySize: 128
+    description: Submit lead information and starts process.
+    events:
+      - http:
+          path: leads
+          method: post
+  leadNew:
+    handler: api/leadNew.handler
+    description: Get new lead and send to CRM
+    events:
+      - stream:
+          type: dynamodb
+          batchSize: 1
+          startingPosition: LATEST
+          arn:
+            Fn::GetAtt:
+              - LeadsDynamoDbTable
+              - StreamArn
+  leadCrmAdd:
+    handler: api/leadCrm.add
+    description: Add lead to CRM
+    events:
+      - sqs:
+          arn: "arn:aws:sqs:${self:provider.region}:${self:provider.environment.ACCOUNT_ID}:${self:provider.environment.CRM_QUEUE}"
+          batchSize: 1
+  leadData:
+    handler: api/leadData.enrich
+    description: Enrich lead data
+    events:
+      - sqs:
+          arn: "arn:aws:sqs:${self:provider.region}:${self:provider.environment.ACCOUNT_ID}:${self:provider.environment.ENRICH_QUEUE}"
+          batchSize: 1
+  leadDialler:
+    handler: api/leadDialler.insert
+    description: Insert lead to dialler
+    events:
+      - sqs:
+          arn: "arn:aws:sqs:${self:provider.region}:${self:provider.environment.ACCOUNT_ID}:${self:provider.environment.DIALLER_QUEUE}"
+          batchSize: 1
+
+resources:
+  Resources:
+    LeadsDynamoDbTable:
+      Type: 'AWS::DynamoDB::Table'
+      DeletionPolicy: Retain
+      Properties:
+        AttributeDefinitions:
+          -
+            AttributeName: "id"
+            AttributeType: "S"
+        KeySchema:
+          -
+            AttributeName: "id"
+            KeyType: "HASH"
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+        StreamSpecification:
+          StreamViewType: "NEW_IMAGE"
+        TableName: ${self:provider.environment.LEAD_TABLE}
+    LeadQueue:
+      Type: 'AWS::SQS::Queue'
+      Properties:
+        QueueName: ${self:provider.environment.CRM_QUEUE}
+    EnrichQueue:
+      Type: 'AWS::SQS::Queue'
+      Properties:
+        QueueName: ${self:provider.environment.ENRICH_QUEUE}
+    DiallerQueue:
+      Type: 'AWS::SQS::Queue'
+      Properties:
+        QueueName: ${self:provider.environment.DIALLER_QUEUE}
+    LeadsSNSTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: ${self:provider.environment.SNS_TOPIC}
